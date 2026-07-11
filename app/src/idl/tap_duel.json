@@ -1,0 +1,513 @@
+{
+  "address": "BmDc7HBxBt5bZLFz6UJ24mdHYr7DQfFw7eSnpo3HamQ6",
+  "metadata": {
+    "name": "tap_duel",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Tap-Duel Arena — real-time 1v1 tug-of-war on Solana via MagicBlock Ephemeral Rollups"
+  },
+  "instructions": [
+    {
+      "name": "create_duel",
+      "docs": [
+        "Host opens a duel. `target` is how far the rope must be pulled to win (e.g. 100).",
+        "`host_session` is the ephemeral pubkey the host's app will sign taps with."
+      ],
+      "discriminator": [
+        49,
+        28,
+        93,
+        11,
+        75,
+        242,
+        69,
+        165
+      ],
+      "accounts": [
+        {
+          "name": "host",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "duel",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  117,
+                  101,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "host"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "target",
+          "type": "i32"
+        },
+        {
+          "name": "host_session",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "delegate_duel",
+      "docs": [
+        "Delegate the Duel PDA into the Ephemeral Rollup. After this, taps execute on the ER.",
+        "Signed by the host (pays the base-layer fee for this one-time delegation tx)."
+      ],
+      "discriminator": [
+        126,
+        33,
+        7,
+        30,
+        154,
+        115,
+        199,
+        100
+      ],
+      "accounts": [
+        {
+          "name": "host",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "buffer_duel",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  102,
+                  102,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "duel"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                159,
+                232,
+                173,
+                128,
+                56,
+                170,
+                230,
+                97,
+                210,
+                205,
+                49,
+                16,
+                176,
+                156,
+                241,
+                35,
+                22,
+                111,
+                204,
+                174,
+                16,
+                183,
+                75,
+                142,
+                187,
+                227,
+                4,
+                131,
+                92,
+                170,
+                234,
+                211
+              ]
+            }
+          }
+        },
+        {
+          "name": "delegation_record_duel",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "duel"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "delegation_metadata_duel",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110,
+                  45,
+                  109,
+                  101,
+                  116,
+                  97,
+                  100,
+                  97,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "duel"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "duel",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  117,
+                  101,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "host"
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner_program",
+          "address": "BmDc7HBxBt5bZLFz6UJ24mdHYr7DQfFw7eSnpo3HamQ6"
+        },
+        {
+          "name": "delegation_program",
+          "address": "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "join_duel",
+      "docs": [
+        "Challenger joins an open duel and registers their session key. Duel becomes Active."
+      ],
+      "discriminator": [
+        7,
+        247,
+        76,
+        103,
+        101,
+        139,
+        254,
+        61
+      ],
+      "accounts": [
+        {
+          "name": "challenger",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "duel",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  117,
+                  101,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "duel.host",
+                "account": "Duel"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "challenger_session",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "settle",
+      "docs": [
+        "Commit the final state to Solana L1 and undelegate. Callable by either session key",
+        "(the app fires this automatically the moment a winner is decided). Gasless on the ER."
+      ],
+      "discriminator": [
+        175,
+        42,
+        185,
+        87,
+        144,
+        131,
+        102,
+        212
+      ],
+      "accounts": [
+        {
+          "name": "session_signer",
+          "signer": true
+        },
+        {
+          "name": "duel",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  117,
+                  101,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "duel.host",
+                "account": "Duel"
+              }
+            ]
+          }
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "magic_context",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "tap",
+      "docs": [
+        "A single tap — runs on the Ephemeral Rollup, gasless, signed by a session key.",
+        "The host pulls the rope negative; the challenger pulls it positive. First to `target` wins.",
+        "`power` is 1 for a normal tap, or up to MAX_TAP_POWER when a VRF boost is applied client-side."
+      ],
+      "discriminator": [
+        31,
+        254,
+        225,
+        122,
+        3,
+        186,
+        67,
+        245
+      ],
+      "accounts": [
+        {
+          "name": "session_signer",
+          "docs": [
+            "The in-app session key. On the ER this is gasless, so it needs no SOL — that is exactly",
+            "what removes the per-tap wallet popup on mobile."
+          ],
+          "signer": true
+        },
+        {
+          "name": "duel",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  117,
+                  101,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "duel.host",
+                "account": "Duel"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "power",
+          "type": "u8"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Duel",
+      "discriminator": [
+        126,
+        229,
+        210,
+        60,
+        177,
+        135,
+        124,
+        224
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidTarget",
+      "msg": "Target must be between 1 and 10000"
+    },
+    {
+      "code": 6001,
+      "name": "NotJoinable",
+      "msg": "Duel is not open for joining"
+    },
+    {
+      "code": 6002,
+      "name": "CannotDuelYourself",
+      "msg": "You cannot duel yourself"
+    },
+    {
+      "code": 6003,
+      "name": "NotActive",
+      "msg": "Duel is not active"
+    },
+    {
+      "code": 6004,
+      "name": "UnauthorizedSession",
+      "msg": "Signer is not a registered session key for this duel"
+    }
+  ],
+  "types": [
+    {
+      "name": "Duel",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "host",
+            "type": "pubkey"
+          },
+          {
+            "name": "challenger",
+            "type": "pubkey"
+          },
+          {
+            "name": "host_session",
+            "type": "pubkey"
+          },
+          {
+            "name": "challenger_session",
+            "type": "pubkey"
+          },
+          {
+            "name": "winner",
+            "type": "pubkey"
+          },
+          {
+            "name": "rope",
+            "type": "i32"
+          },
+          {
+            "name": "target",
+            "type": "i32"
+          },
+          {
+            "name": "tap_count",
+            "type": "u64"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

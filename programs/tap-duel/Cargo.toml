@@ -1,0 +1,27 @@
+[package]
+name = "tap-duel"
+version = "0.1.0"
+description = "Tap-Duel Arena — real-time 1v1 tug-of-war on Solana via MagicBlock Ephemeral Rollups"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "tap_duel"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+# Must be 0.32 to unify with the anchor-lang that ephemeral-vrf-sdk (pulled in by the SDK's
+# `anchor-compat` feature) resolves to. Its requirement is `>=0.28, <1.0`, so Cargo picks the highest
+# 0.x = 0.32.x; pinning the program to 0.31 would leave two anchor-lang copies and MagicProgram's
+# `Id` impl would come from the wrong one. (Anchor's CLI jumped 0.31 → 1.0; the 0.32 CLI doesn't
+# exist, but building with the 0.31 CLI against anchor-lang 0.32 compiles and deploys fine.)
+anchor-lang = "0.32"
+# anchor-compat = Anchor 0.28–<1.0 + solana 2.x. (`anchor` == anchor-modern = Anchor 1.0 / Solana 3.0.)
+ephemeral-rollups-sdk = { version = "0.15", features = ["anchor-compat"] }

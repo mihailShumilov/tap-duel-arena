@@ -1,0 +1,23 @@
+# Rust / Anchor
+target/
+.anchor/
+test-ledger/
+**/*.rs.bk
+
+# Node
+node_modules/
+app/dist/
+app/dev-dist/
+*.log
+
+# Env / keys
+.env
+.env.local
+app/.env.local
+*.pem
+wallet-keypair.json
+
+# OS
+.DS_Store
+deploy-keypair.json
+program-keypair.json
