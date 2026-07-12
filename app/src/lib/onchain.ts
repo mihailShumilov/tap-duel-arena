@@ -70,6 +70,8 @@ export class OnchainEngine implements DuelEngine {
   private role: Side = "host";
   private programId = new PublicKey(PROGRAM_ID);
   private hostKey!: PublicKey; // whose PDA this duel lives under (set during quickMatch)
+  private currentDuel!: PublicKey; // the duel PDA we're currently polling (can switch on yield)
+  private rescanBusy = false;
   private pollTimer: number | null = null;
   private tapTimestamps: number[] = [];
 
@@ -143,8 +145,8 @@ export class OnchainEngine implements DuelEngine {
     }
   }
 
-  /** Scan the base layer for an open duel (status = WaitingForChallenger) that isn't ours. */
-  private async findOpenDuel(): Promise<PublicKey | null> {
+  /** All open-duel host pubkeys (status = WaitingForChallenger) currently on the base layer. */
+  private async findOpenHosts(): Promise<PublicKey[]> {
     const accts = await this.base.getProgramAccounts(this.programId, {
       filters: [
         { dataSize: DUEL_ACCOUNT_SIZE },
@@ -152,34 +154,66 @@ export class OnchainEngine implements DuelEngine {
         { memcmp: { offset: STATUS_OFFSET, bytes: "1" } },
       ],
     });
-    for (const { account } of accts) {
-      const host = new PublicKey(
-        account.data.subarray(HOST_OFFSET, HOST_OFFSET + 32)
-      );
-      if (!host.equals(this.walletPk)) return host; // someone else's open duel
-    }
-    return null;
+    return accts.map(
+      ({ account }) =>
+        new PublicKey(account.data.subarray(HOST_OFFSET, HOST_OFFSET + 32))
+    );
   }
 
-  /** Auto-match: join the nearest open duel, or open one and wait for a challenger. */
+  // Deterministic pick so every client converges on the SAME open duel to join.
+  private static smallest(keys: PublicKey[]): PublicKey | null {
+    if (!keys.length) return null;
+    return keys.reduce((a, b) => (a.toBase58() < b.toBase58() ? a : b));
+  }
+
+  /** Auto-match: join the smallest open duel, or open one and wait for a challenger. */
   async quickMatch() {
-    this.emit({ phase: "waiting", note: "Looking for an open duel…" });
-    let open: PublicKey | null = null;
+    // Guard: an unfunded wallet can't pay the base-layer create/join fee — say so clearly.
+    let bal = 0;
     try {
-      open = await this.findOpenDuel();
+      bal = await getBalanceSol(this.base, this.walletPk);
+    } catch {
+      /* ignore */
+    }
+    if (bal < 0.01) {
+      this.emit({
+        phase: "error",
+        note: `Wallet has ${bal.toFixed(4)} SOL — a host needs devnet SOL for create + delegate. Fund ~0.05 SOL at faucet.solana.com and tap Quick Match again.`,
+      });
+      return;
+    }
+
+    this.emit({ phase: "waiting", note: "Looking for an open duel…" });
+    let others: PublicKey[] = [];
+    try {
+      const hosts = await this.findOpenHosts();
+      others = hosts.filter((h) => !h.equals(this.walletPk));
     } catch {
       /* getProgramAccounts hiccup — fall through to hosting */
     }
-    if (open) {
-      this.role = "challenger";
-      this.hostKey = open;
-      this.emit({ mySide: "challenger", note: "Found a duel — joining…" });
-      await this.joinDuel();
-    } else {
-      this.role = "host";
-      this.hostKey = this.walletPk;
-      this.emit({ mySide: "host", note: "No open duels — opening yours, waiting for a rival…" });
-      await this.createDuel(DEFAULT_TARGET);
+    const target = OnchainEngine.smallest(others);
+    try {
+      if (target) {
+        this.role = "challenger";
+        this.hostKey = target;
+        this.emit({ mySide: "challenger", note: "Found an open duel — joining…" });
+        await this.joinDuel();
+      } else {
+        this.role = "host";
+        this.hostKey = this.walletPk;
+        this.emit({
+          mySide: "host",
+          note: "No open duels — opening yours, waiting for a rival…",
+        });
+        await this.createDuel(DEFAULT_TARGET);
+      }
+    } catch (e: any) {
+      // Surface the real reason instead of hanging on "waiting" forever.
+      this.emit({
+        phase: "error",
+        note: friendlyError(e),
+      });
+      throw e;
     }
   }
 
@@ -273,15 +307,42 @@ export class OnchainEngine implements DuelEngine {
   }
 
   private startPolling(duel: PublicKey) {
+    this.currentDuel = duel;
     if (this.pollTimer) return;
     let settleTriggered = false;
-    const duelB58 = duel.toBase58();
-    const hostBytes = this.hostKey.toBytes();
+    let tick = 0;
     this.pollTimer = window.setInterval(async () => {
+      tick++;
+
+      // Rescan-and-yield: a waiting host periodically re-checks for other open duels. If one exists
+      // with a smaller pubkey, this client yields (becomes the challenger and joins it) so two
+      // players who each opened a duel converge on a single match instead of both waiting forever.
+      if (
+        this.role === "host" &&
+        this.state.phase === "waiting" &&
+        !this.delegated &&
+        !this.rescanBusy &&
+        tick % 12 === 0
+      ) {
+        this.rescanBusy = true;
+        try {
+          const smallest = OnchainEngine.smallest(await this.findOpenHosts());
+          if (smallest && !smallest.equals(this.walletPk)) {
+            this.role = "challenger";
+            this.hostKey = smallest;
+            this.emit({ mySide: "challenger", note: "Matched — joining…" });
+            await this.joinDuel(); // re-points polling to their duel
+          }
+        } catch {
+          /* ignore */
+        }
+        this.rescanBusy = false;
+      }
+
       try {
         // Read the live Duel account through the resilient failover pool (Magic Router primary,
         // devnet/QuickNode backups). This is the solana-resilience-kit read path.
-        const acc = await fetchDuel(this.resilience.rpc, duelB58);
+        const acc = await fetchDuel(this.resilience.rpc, this.currentDuel.toBase58());
         if (!acc) return; // account not created yet — keep polling
 
         const cutoff = performance.now() - 1000;
@@ -291,19 +352,17 @@ export class OnchainEngine implements DuelEngine {
         let winner: Side | null = this.state.winner;
 
         // Host auto-delegates the moment the challenger joins, then taps go live on the ER.
-        if (acc.status === 1 && !this.delegated && this.state.mySide === "host") {
+        if (acc.status === 1 && !this.delegated && this.role === "host") {
           this.delegated = true;
           void this.delegate();
         }
-        if (
-          acc.status === 1 &&
-          phase === "waiting" &&
-          this.state.mySide === "challenger"
-        )
+        if (acc.status === 1 && phase === "waiting" && this.role === "challenger")
           phase = "active";
         if (acc.status === 2) {
-          winner = bytesEqual(acc.winner, hostBytes) ? "host" : "challenger";
-          if (!settleTriggered && this.state.mySide === "host") {
+          winner = bytesEqual(acc.winner, this.hostKey.toBytes())
+            ? "host"
+            : "challenger";
+          if (!settleTriggered && this.role === "host") {
             settleTriggered = true;
             void this.settle();
           }
@@ -338,4 +397,17 @@ export class OnchainEngine implements DuelEngine {
 
 export function newSessionKeypair(): Keypair {
   return getSessionKey();
+}
+
+function friendlyError(e: any): string {
+  const msg = String(e?.message || e || "Unknown error");
+  if (/insufficient|0x1\b|debit an account|not enough lamports/i.test(msg))
+    return "Not enough devnet SOL — fund your wallet at faucet.solana.com and tap Quick Match again.";
+  if (/User rejected|rejected the request|denied|declined/i.test(msg))
+    return "Wallet request was rejected — approve it to create/join the duel.";
+  if (/blockhash|block height exceeded|expired|Timed out|timeout/i.test(msg))
+    return "Network hiccup (blockhash expired). Tap Quick Match again.";
+  if (/already in use|already been processed|custom program error: 0x0/i.test(msg))
+    return "This wallet already has a duel from a previous round. Reload the page (or use a fresh wallet) to play again.";
+  return "Couldn't start the match: " + msg.slice(0, 180);
 }

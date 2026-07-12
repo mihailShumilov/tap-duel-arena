@@ -10,7 +10,8 @@ export type DuelPhase =
   | "delegating" // delegating the Duel PDA into the Ephemeral Rollup
   | "active" // taps are live on the ER
   | "settling" // committing final state to Solana L1
-  | "settled"; // committed + undelegated; explorer link available
+  | "settled" // committed + undelegated; explorer link available
+  | "error"; // something failed (e.g. unfunded wallet, rejected tx)
 
 export interface DuelState {
   phase: DuelPhase;

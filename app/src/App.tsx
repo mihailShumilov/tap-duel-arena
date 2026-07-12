@@ -351,6 +351,18 @@ function Game({
           onReset={onReset}
         />
       )}
+
+      {state.phase === "error" && (
+        <div className="overlay">
+          <div className="card">
+            <h2 className="lose">Couldn't start the match</h2>
+            <p>{state.note}</p>
+            <button className="cta small" onClick={onReset}>
+              Back
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
