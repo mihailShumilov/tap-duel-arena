@@ -33,6 +33,7 @@ export class DemoEngine implements DuelEngine {
       mode: "demo",
       note: null,
       rpc: { active: "demo-sim", healthy: true, failovers: 0 },
+      wallet: null,
     };
   }
 

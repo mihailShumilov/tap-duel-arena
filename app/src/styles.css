@@ -470,3 +470,49 @@ body {
   background: var(--them);
   box-shadow: 0 0 8px var(--them);
 }
+
+/* ---------- Wallet ---------- */
+.wallet-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  background: var(--bg2);
+  border: 1px solid rgba(34, 224, 196, 0.3);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.wallet-chip b {
+  color: var(--text);
+}
+.wc-addr {
+  font-family: ui-monospace, monospace;
+  color: #cbb8ff;
+}
+.wc-bal {
+  color: var(--you);
+  font-weight: 700;
+}
+.wc-faucet {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  border-radius: 8px;
+  padding: 2px 8px;
+}
+.wallet-err {
+  color: var(--them);
+  font-size: 13px;
+  text-align: center;
+  max-width: 340px;
+}
+.spinner.small {
+  width: 26px;
+  height: 26px;
+  border-width: 3px;
+  margin: 4px auto 0;
+}

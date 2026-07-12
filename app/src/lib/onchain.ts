@@ -28,7 +28,8 @@ import {
   fetchDuel,
 } from "./resilience";
 import { PROGRAM_ID, RPC, explorerAddress, explorerTx } from "./config";
-import { getSessionKey, getWallet } from "./session";
+import { getSessionKey } from "./session";
+import { AppWallet, getBalanceSol } from "./wallet";
 import {
   DEFAULT_TARGET,
   DuelEngine,
@@ -36,6 +37,11 @@ import {
   MAX_TAP_POWER,
   Side,
 } from "./engine";
+
+// Duel account: 8 disc + 5 pubkeys + i32 + i32 + u64 + u8 + u8 = 186 bytes; status byte at 184.
+const DUEL_ACCOUNT_SIZE = 186;
+const STATUS_OFFSET = 184;
+const HOST_OFFSET = 8;
 
 const DUEL_SEED = new TextEncoder().encode("duel");
 
@@ -58,40 +64,30 @@ export class OnchainEngine implements DuelEngine {
   private base: Connection;
   private resilience: Resilience; // solana-resilience-kit: multi-RPC failover for live reads
   private delegated = false;
-  private wallet = getWallet();
+  private wallet: AppWallet;
+  private walletPk: PublicKey;
   private session = getSessionKey();
+  private role: Side = "host";
   private programId = new PublicKey(PROGRAM_ID);
-  private hostKey: PublicKey; // whose PDA this duel lives under
+  private hostKey!: PublicKey; // whose PDA this duel lives under (set during quickMatch)
   private pollTimer: number | null = null;
   private tapTimestamps: number[] = [];
 
-  constructor(role: "host" | "challenger", duelCode?: string) {
+  constructor(appWallet: AppWallet) {
+    this.wallet = appWallet;
+    this.walletPk = appWallet.publicKey;
+
     // The router is a normal Connection to the Magic Router endpoint; sendMagicTransaction inspects
     // each tx and dispatches it to the ER (delegated accounts) or the base layer automatically.
     this.router = new Connection(RPC.router, "confirmed");
     this.base = new Connection(RPC.base, "confirmed");
 
-    // Anchor's browser build doesn't ship NodeWallet, so wrap the keypair in the minimal wallet
-    // interface AnchorProvider needs (used only for base-layer create/join/delegate txs).
-    const wallet = {
-      publicKey: this.wallet.publicKey,
-      signTransaction: async (tx: Transaction) => {
-        tx.partialSign(this.wallet);
-        return tx;
-      },
-      signAllTransactions: async (txs: Transaction[]) => {
-        txs.forEach((t) => t.partialSign(this.wallet));
-        return txs;
-      },
-      payer: this.wallet,
-    };
-    const provider = new AnchorProvider(this.base, wallet as any, {
+    // The connected wallet (Phantom or burner) signs the base-layer create/join/delegate txs.
+    const provider = new AnchorProvider(this.base, appWallet as any, {
       commitment: "confirmed",
     });
     this.program = new Program(idl as any, provider);
-    // Reads go through the router: it serves base-layer state before delegation and live ER state
-    // after, so the same fetch works across the whole lifecycle.
-    const readProvider = new AnchorProvider(this.router, wallet as any, {
+    const readProvider = new AnchorProvider(this.router, appWallet as any, {
       commitment: "confirmed",
     });
     this.readProgram = new Program(idl as any, readProvider);
@@ -106,29 +102,85 @@ export class OnchainEngine implements DuelEngine {
       ].filter(Boolean) as { name: string; url: string }[]
     );
 
-    this.hostKey =
-      role === "host"
-        ? this.wallet.publicKey
-        : new PublicKey(duelCode as string);
-
     this.state = {
       phase: "idle",
       rope: 0,
       target: DEFAULT_TARGET,
       tapCount: 0,
-      mySide: role,
+      mySide: "host",
       winner: null,
       tapsPerSec: 0,
       settleSignature: null,
       explorerUrl: null,
       mode: "onchain",
-      note: `You: ${this.wallet.publicKey.toBase58().slice(0, 4)}…`,
+      note: null,
       rpc: {
         active: this.resilience.status.active,
         healthy: this.resilience.status.healthy,
         failovers: this.resilience.status.failovers,
       },
+      wallet: {
+        address: this.walletPk.toBase58(),
+        label: appWallet.label,
+        balanceSol: null,
+      },
     };
+    void this.refreshBalance();
+  }
+
+  private async refreshBalance() {
+    try {
+      const balanceSol = await getBalanceSol(this.base, this.walletPk);
+      this.emit({
+        wallet: {
+          address: this.walletPk.toBase58(),
+          label: this.wallet.label,
+          balanceSol,
+        },
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Scan the base layer for an open duel (status = WaitingForChallenger) that isn't ours. */
+  private async findOpenDuel(): Promise<PublicKey | null> {
+    const accts = await this.base.getProgramAccounts(this.programId, {
+      filters: [
+        { dataSize: DUEL_ACCOUNT_SIZE },
+        // status byte == 0 (WaitingForChallenger); base58 of a single 0x00 byte is "1".
+        { memcmp: { offset: STATUS_OFFSET, bytes: "1" } },
+      ],
+    });
+    for (const { account } of accts) {
+      const host = new PublicKey(
+        account.data.subarray(HOST_OFFSET, HOST_OFFSET + 32)
+      );
+      if (!host.equals(this.walletPk)) return host; // someone else's open duel
+    }
+    return null;
+  }
+
+  /** Auto-match: join the nearest open duel, or open one and wait for a challenger. */
+  async quickMatch() {
+    this.emit({ phase: "waiting", note: "Looking for an open duel…" });
+    let open: PublicKey | null = null;
+    try {
+      open = await this.findOpenDuel();
+    } catch {
+      /* getProgramAccounts hiccup — fall through to hosting */
+    }
+    if (open) {
+      this.role = "challenger";
+      this.hostKey = open;
+      this.emit({ mySide: "challenger", note: "Found a duel — joining…" });
+      await this.joinDuel();
+    } else {
+      this.role = "host";
+      this.hostKey = this.walletPk;
+      this.emit({ mySide: "host", note: "No open duels — opening yours, waiting for a rival…" });
+      await this.createDuel(DEFAULT_TARGET);
+    }
   }
 
   getState() {
@@ -152,12 +204,16 @@ export class OnchainEngine implements DuelEngine {
   }
 
   async createDuel(target: number) {
-    const duel = duelPda(this.wallet.publicKey, this.programId);
+    const duel = duelPda(this.walletPk, this.programId);
     await (this.program as any).methods
       .createDuel(new BN(target), this.session.publicKey)
-      .accounts({ host: this.wallet.publicKey, duel })
+      .accounts({ host: this.walletPk, duel })
       .rpc();
-    this.emit({ phase: "waiting", target, note: "Share your duel code to invite an opponent" });
+    this.emit({
+      phase: "waiting",
+      target,
+      note: "You're open — waiting for a rival to quick-match…",
+    });
     this.startPolling(duel);
   }
 
@@ -165,7 +221,7 @@ export class OnchainEngine implements DuelEngine {
     const duel = duelPda(this.hostKey, this.programId);
     await (this.program as any).methods
       .joinDuel(this.session.publicKey)
-      .accounts({ challenger: this.wallet.publicKey, duel })
+      .accounts({ challenger: this.walletPk, duel })
       .rpc();
     this.emit({ note: "Joined — delegating to the rollup…" });
     // The host is responsible for delegating; the challenger just waits for phase → active.
@@ -175,13 +231,13 @@ export class OnchainEngine implements DuelEngine {
   /** Delegate the Duel PDA into the ER. Host-only; one base-layer tx. */
   async delegate() {
     this.emit({ phase: "delegating", note: "Delegating to Ephemeral Rollup…" });
-    const duel = duelPda(this.wallet.publicKey, this.programId);
+    const duel = duelPda(this.walletPk, this.programId);
     // Anchor 0.31 auto-resolves the seeded delegation PDAs (buffer/record/metadata) and system
     // program from the IDL. owner_program is this program; delegation_program is provided by the
     // ER SDK. If resolution complains, mirror the accounts from the counter example's delegate call.
     await (this.program as any).methods
       .delegateDuel()
-      .accounts({ host: this.wallet.publicKey, duel })
+      .accounts({ host: this.walletPk, duel })
       .rpc();
     this.emit({ phase: "active", note: "Live on the rollup — tap!" });
   }

@@ -1,56 +1,54 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { DemoEngine } from "./lib/demo";
 import { DuelEngine, DuelState, DEFAULT_TARGET } from "./lib/engine";
 import { MODE } from "./lib/config";
-
-// The on-chain engine is imported lazily so demo mode never pulls in web3/anchor at startup.
-async function makeEngine(
-  role: "host" | "challenger",
-  duelCode?: string
-): Promise<DuelEngine> {
-  if (MODE === "onchain") {
-    const { OnchainEngine } = await import("./lib/onchain");
-    return new OnchainEngine(role, duelCode);
-  }
-  return new DemoEngine();
-}
+import type { AppWallet } from "./lib/wallet";
 
 export default function App() {
   const [engine, setEngine] = useState<DuelEngine | null>(null);
   const [state, setState] = useState<DuelState | null>(null);
   const [booting, setBooting] = useState(false);
+  const [wallet, setWallet] = useState<AppWallet | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!engine) return;
     const unsub = engine.subscribe(setState);
-    return () => {
-      unsub();
-    };
+    return () => unsub();
   }, [engine]);
 
   const startDemo = useCallback(async () => {
     setBooting(true);
-    const e = await makeEngine("host");
+    const e = new DemoEngine();
     setEngine(e);
     await e.createDuel(DEFAULT_TARGET);
     setBooting(false);
   }, []);
 
-  const startHost = useCallback(async () => {
-    setBooting(true);
-    const e = await makeEngine("host");
-    setEngine(e);
-    await e.createDuel(DEFAULT_TARGET);
-    setBooting(false);
+  const connectWallet = useCallback(async (kind: "injected" | "burner") => {
+    setErr(null);
+    try {
+      const w = await import("./lib/wallet");
+      setWallet(kind === "injected" ? await w.connectInjected() : w.burnerWallet());
+    } catch (e: any) {
+      setErr(e?.message || "Could not connect wallet");
+    }
   }, []);
 
-  const startJoin = useCallback(async (code: string) => {
+  const quickMatch = useCallback(async () => {
+    if (!wallet) return;
     setBooting(true);
-    const e = await makeEngine("challenger", code.trim());
-    setEngine(e);
-    await e.joinDuel();
+    setErr(null);
+    try {
+      const { OnchainEngine } = await import("./lib/onchain");
+      const e = new OnchainEngine(wallet);
+      setEngine(e);
+      await e.quickMatch();
+    } catch (e: any) {
+      setErr(e?.message || "Match failed — check your devnet balance");
+    }
     setBooting(false);
-  }, []);
+  }, [wallet]);
 
   const reset = useCallback(() => {
     engine?.dispose();
@@ -61,10 +59,12 @@ export default function App() {
   if (!engine || !state) {
     return (
       <Home
-        onStart={startDemo}
-        onHost={startHost}
-        onJoin={startJoin}
         booting={booting}
+        wallet={wallet}
+        err={err}
+        onStartDemo={startDemo}
+        onConnect={connectWallet}
+        onQuickMatch={quickMatch}
       />
     );
   }
@@ -72,18 +72,27 @@ export default function App() {
 }
 
 function Home({
-  onStart,
-  onHost,
-  onJoin,
   booting,
+  wallet,
+  err,
+  onStartDemo,
+  onConnect,
+  onQuickMatch,
 }: {
-  onStart: () => void;
-  onHost: () => void;
-  onJoin: (code: string) => void;
   booting: boolean;
+  wallet: AppWallet | null;
+  err: string | null;
+  onStartDemo: () => void;
+  onConnect: (kind: "injected" | "burner") => void;
+  onQuickMatch: () => void;
 }) {
-  const [code, setCode] = useState("");
   const onchain = MODE === "onchain";
+  const [hasInjected, setHasInjected] = useState(false);
+  useEffect(() => {
+    if (!onchain) return;
+    import("./lib/wallet").then((w) => setHasInjected(w.hasInjectedWallet()));
+  }, [onchain]);
+
   return (
     <div className="screen home">
       <div className="glow" />
@@ -106,29 +115,42 @@ function Home({
       </div>
 
       {!onchain ? (
-        <button className="cta" onClick={onStart} disabled={booting}>
+        <button className="cta" onClick={onStartDemo} disabled={booting}>
           {booting ? "Setting up…" : "Start a Duel"}
         </button>
       ) : (
         <div className="lobby">
-          <button className="cta" onClick={onHost} disabled={booting}>
-            {booting ? "Setting up…" : "Host a Duel"}
-          </button>
-          <div className="join-row">
-            <input
-              className="code-input"
-              placeholder="Paste duel code to join"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-            />
-            <button
-              className="cta small"
-              onClick={() => onJoin(code)}
-              disabled={booting || code.trim().length < 32}
-            >
-              Join
-            </button>
-          </div>
+          {!wallet ? (
+            <>
+              {hasInjected && (
+                <button className="cta" onClick={() => onConnect("injected")}>
+                  Connect Wallet
+                </button>
+              )}
+              <button
+                className={hasInjected ? "cta small" : "cta"}
+                onClick={() => onConnect("burner")}
+              >
+                {hasInjected ? "Use a burner wallet" : "Create burner wallet"}
+              </button>
+              {!hasInjected && (
+                <p className="mode-note">
+                  No wallet extension detected — a local devnet burner will be used.
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <WalletChip wallet={wallet} />
+              <button className="cta" onClick={onQuickMatch} disabled={booting}>
+                {booting ? "Matching…" : "⚔️ Quick Match"}
+              </button>
+              <p className="mode-note">
+                Auto-joins the nearest open duel — or opens yours and waits.
+              </p>
+            </>
+          )}
+          {err && <p className="wallet-err">{err}</p>}
         </div>
       )}
 
@@ -138,6 +160,53 @@ function Home({
           ? " — local simulation, no wallet needed"
           : " — live on Solana devnet via Ephemeral Rollups"}
       </p>
+    </div>
+  );
+}
+
+function WalletChip({ wallet }: { wallet: AppWallet }) {
+  const [bal, setBal] = useState<number | null>(null);
+  const addr = wallet.publicKey.toBase58();
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const [{ getBalanceSol }, web3, { RPC }] = await Promise.all([
+          import("./lib/wallet"),
+          import("@solana/web3.js"),
+          import("./lib/config"),
+        ]);
+        const c = new web3.Connection(RPC.base, "confirmed");
+        const b = await getBalanceSol(c, wallet.publicKey);
+        if (live) setBal(b);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [wallet]);
+  return (
+    <div className="wallet-chip">
+      <span className="dot ok" />
+      <b>{wallet.label}</b>
+      <span className="wc-addr">
+        {addr.slice(0, 4)}…{addr.slice(-4)}
+      </span>
+      <span className="wc-bal">
+        {bal === null ? "…" : `${bal.toFixed(3)} SOL`}
+      </span>
+      {bal === 0 && (
+        <a
+          className="wc-faucet"
+          href="https://faucet.solana.com"
+          target="_blank"
+          rel="noreferrer"
+        >
+          fund
+        </a>
+      )}
     </div>
   );
 }
@@ -215,6 +284,19 @@ function Game({
         </div>
       )}
 
+      {state.wallet && (
+        <div className="rpc-bar">
+          <span className="dot ok" />
+          Wallet: <b>{state.wallet.label}</b>
+          <span className="rpc-sep">
+            {state.wallet.address.slice(0, 4)}…{state.wallet.address.slice(-4)}
+          </span>
+          {state.wallet.balanceSol !== null && (
+            <span className="rpc-sep">· {state.wallet.balanceSol.toFixed(3)} SOL</span>
+          )}
+        </div>
+      )}
+
       <div className="arena">
         <div className="side-label you">YOU</div>
         <div className="side-label them">RIVAL</div>
@@ -238,10 +320,7 @@ function Game({
 
         {state.note && <div className="note">{state.note}</div>}
 
-        {state.phase === "waiting" &&
-          typeof (engine as any).duelCode === "function" && (
-            <DuelCode code={(engine as any).duelCode()} />
-          )}
+        {state.phase === "waiting" && <div className="spinner small" />}
       </div>
 
       <div className="controls">
@@ -321,30 +400,6 @@ function Overlay({
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-function DuelCode({ code }: { code: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="duel-code">
-      <span className="dc-label">Share this duel code:</span>
-      <code className="dc-value">{code}</code>
-      <button
-        className="dc-copy"
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(code);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          } catch {
-            /* clipboard blocked */
-          }
-        }}
-      >
-        {copied ? "Copied ✓" : "Copy"}
-      </button>
     </div>
   );
 }

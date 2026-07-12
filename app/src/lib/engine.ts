@@ -26,6 +26,8 @@ export interface DuelState {
   note: string | null; // optional status line (e.g. "opponent joined")
   // Live RPC resilience status (solana-resilience-kit) — active endpoint + failover count.
   rpc: { active: string; healthy: boolean; failovers: number } | null;
+  // Connected wallet (onchain mode).
+  wallet: { address: string; label: string; balanceSol: number | null } | null;
 }
 
 export interface DuelEngine {
@@ -35,6 +37,8 @@ export interface DuelEngine {
   createDuel(target: number): Promise<void>;
   /** Challenger joins the open duel (demo: an AI opponent joins automatically). */
   joinDuel(): Promise<void>;
+  /** Onchain: auto-match — join the nearest open duel, or open one and wait. */
+  quickMatch?(): Promise<void>;
   /** One tap. power 1 = normal, up to 5 with a VRF boost. Gasless on the ER. */
   tap(power: number): Promise<void>;
   /** Commit the final state to Solana L1 and undelegate. */
