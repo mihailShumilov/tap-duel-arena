@@ -36,6 +36,11 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,svg,png}"],
+        // Apply new builds immediately instead of waiting for every tab to close — avoids serving a
+        // stale cached bundle after a redeploy.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
       },
     }),
   ],
