@@ -266,27 +266,38 @@ export class OnchainEngine implements DuelEngine {
   async delegate() {
     this.emit({ phase: "delegating", note: "Delegating to Ephemeral Rollup…" });
     const duel = duelPda(this.walletPk, this.programId);
-    // Anchor 0.31 auto-resolves the seeded delegation PDAs (buffer/record/metadata) and system
-    // program from the IDL. owner_program is this program; delegation_program is provided by the
-    // ER SDK. If resolution complains, mirror the accounts from the counter example's delegate call.
-    await (this.program as any).methods
-      .delegateDuel()
-      .accounts({ host: this.walletPk, duel })
-      .rpc();
-    this.emit({ phase: "active", note: "Live on the rollup — tap!" });
+    try {
+      // Anchor auto-resolves the seeded delegation PDAs (buffer/record/metadata) + system program
+      // from the IDL. owner_program is this program; delegation_program comes from the ER SDK.
+      await (this.program as any).methods
+        .delegateDuel()
+        .accounts({ host: this.walletPk, duel })
+        .rpc();
+      this.emit({ phase: "active", note: "Live on the rollup — tap!" });
+    } catch (e: any) {
+      // Transient RPC hiccup (e.g. a 429) shouldn't wedge the match — allow the poll loop to retry.
+      this.delegated = false;
+      this.emit({ phase: "waiting", note: "Delegation retry…" });
+    }
   }
 
   async tap(power: number) {
     if (this.state.phase !== "active") return;
     const duel = duelPda(this.hostKey, this.programId);
-    const ix = await (this.program as any).methods
-      .tap(Math.max(1, Math.min(MAX_TAP_POWER, power)))
-      .accounts({ sessionSigner: this.session.publicKey, duel })
-      .instruction();
-    const tx = new Transaction().add(ix);
-    // Gasless on the ER, signed by the session key → no wallet popup.
-    await sendMagicTransaction(this.router, tx, [this.session]);
-    this.tapTimestamps.push(performance.now());
+    try {
+      const ix = await (this.program as any).methods
+        .tap(Math.max(1, Math.min(MAX_TAP_POWER, power)))
+        .accounts({ sessionSigner: this.session.publicKey, duel })
+        .instruction();
+      const tx = new Transaction().add(ix);
+      // Gasless on the ER, signed by the session key → no wallet popup. If the account isn't
+      // delegated yet (host still finishing delegate), the router sends this to base where the
+      // session key can't pay — swallow it; taps land the moment delegation completes.
+      await sendMagicTransaction(this.router, tx, [this.session]);
+      this.tapTimestamps.push(performance.now());
+    } catch {
+      /* pre-delegation tap or transient ER hiccup — ignore, next tap will land */
+    }
   }
 
   async settle() {
@@ -381,7 +392,7 @@ export class OnchainEngine implements DuelEngine {
       } catch {
         /* transient RPC/ER error — the pool fails over; keep polling */
       }
-    }, 120);
+    }, 250); // gentler than 120ms so free RPC tiers (Helius) don't rate-limit the read loop
   }
 
   hostAddressUrl(): string {

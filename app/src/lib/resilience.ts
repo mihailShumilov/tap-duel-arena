@@ -46,7 +46,10 @@ export function createResilience(
       transport: createDefaultRpcTransport({ url: e.url }),
     })),
     events,
-    freshnessAware: true,
+    // freshnessAware probes getSlot on EVERY endpoint before each request, which multiplies traffic
+    // and rate-limits free RPC tiers (Helius 429s). Off = serve from the primary and only fail over
+    // on an actual error — far fewer calls, which is what a 5-req/s game read loop needs.
+    freshnessAware: false,
   });
 
   const status: RpcStatus = {
